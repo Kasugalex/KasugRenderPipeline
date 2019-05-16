@@ -16,6 +16,10 @@ CBUFFER_START(UnityPerDraw)
 float4x4 unity_ObjectToWorld;
 CBUFFER_END
 
+CBUFFER_START(_ShadowCasterBuffer)
+float _ShadowBias;
+CBUFFER_END
+
 struct VertexInput {
 	float4 pos : POSITION;
 	//UNITY_MATRIX_M relies on the index,so add it to the VertexInput.
@@ -36,9 +40,11 @@ VertexOutput ShadowCasterPassVertex(VertexInput input) {
 	//shadow casters may intersect the near plane,to prevent this,should clamp the vertices to near place
 	//OpenGL the  near plane value is -1
 #if UNITY_REVERSED_Z
+	output.clipPos.z -= _ShadowBias;
 	output.clipPos.z = min(output.clipPos.z,output.clipPos.w * UNITY_NEAR_CLIP_VALUE);
 
 #else
+	output.clipPos.z += _ShadowBias;
 	output.clipPos.z = max(output.clipPos.z, output.clipPos.w * UNITY_NEAR_CLIP_VALUE);
 #endif
 	return output;

@@ -9,16 +9,16 @@ public class MyPipeline : RenderPipeline
 {
 
     private CullResults cull;
-
-    private CommandBuffer cameraBuffer = new CommandBuffer() { name = "Render Camera" };
-
-    private CommandBuffer shadowBuffer = new CommandBuffer() { name = "Render Shadows" };
-
+    private const int maxVisibleLights                          =   16;
+    private RenderTexture shadowMap;
+    private int shadowMapSize;
     private Material errorMaterial;
-
     private DrawRendererFlags drawFlags;
 
-    private const int maxVisibleLights = 16;
+
+    private CommandBuffer cameraBuffer                          =   new CommandBuffer() { name = "Render Camera" };
+    private CommandBuffer shadowBuffer                          =   new CommandBuffer() { name = "Render Shadows" };
+
     private Vector4[] visibleLightColors                        =   new Vector4[maxVisibleLights];
     private Vector4[] visibleLightDirectionsOrPositions         =   new Vector4[maxVisibleLights];
     private Vector4[] visibleLightAttenuations                  =   new Vector4[maxVisibleLights];
@@ -28,13 +28,15 @@ public class MyPipeline : RenderPipeline
     private static int visibleLightDirectionsId                 =   Shader.PropertyToID("_VisibleLightDirectionsOrPositions");
     private static int visibleLightAttenuationsId               =   Shader.PropertyToID("_VisibleLightAttenuations");
     private static int visibleLightSpotDirectionsId             =   Shader.PropertyToID("_VisibleLightSpotDirections");
-    private static int lightIndicesOffsetAndCountID             =   Shader.PropertyToID("unity_LIghtIndicesOffsetAndCount");
+    private static int lightIndicesOffsetAndCountId             =   Shader.PropertyToID("unity_LIghtIndicesOffsetAndCount");
     private static int shadowMapId                              =   Shader.PropertyToID("_ShadowMap");
     private static int worldToShadowMatrixId                    =   Shader.PropertyToID("_WorldToShadowMatrix");
+    private static int shadowBiasId                             =   Shader.PropertyToID("_ShadowBias");
+    private static int shadowStrengthId                         =   Shader.PropertyToID("_ShadowStrength");
 
-    private RenderTexture shadowMap;
 
-    public MyPipeline(bool dynamicBatching,bool instance)
+
+    public MyPipeline(bool dynamicBatching,bool instance,int shadowMapSize)
     {
         //By default Unity considers the light's intensity to be defined in gamma space, even through we're working in linear space
         GraphicsSettings.lightsUseLinearIntensity = true;
@@ -47,6 +49,8 @@ public class MyPipeline : RenderPipeline
         {
             drawFlags |= DrawRendererFlags.EnableInstancing;
         }
+
+        this.shadowMapSize = shadowMapSize;
     }
 
     public MyPipeline() { }
@@ -76,11 +80,13 @@ public class MyPipeline : RenderPipeline
         {
             return;
         }
-#if UNITY_EDITOR
+
+        #if UNITY_EDITOR
         //UI
         if (camera.cameraType == CameraType.SceneView)
             ScriptableRenderContext.EmitWorldGeometryForSceneView(camera);
-#endif
+        #endif
+
         //supply th culling parameters as a reference parameter
         CullResults.Cull(ref cullingParameters, renderContext, ref cull);
 
@@ -92,11 +98,11 @@ public class MyPipeline : RenderPipeline
 
         CameraClearFlags clearFlags = camera.clearFlags;
         cameraBuffer.ClearRenderTarget((clearFlags & CameraClearFlags.Depth) != 0, (clearFlags & CameraClearFlags.Color) != 0, camera.backgroundColor);
-        //
+
         if (cull.visibleLights.Count > 0)
             ConfigureLights();
         else
-            cameraBuffer.SetGlobalVector(lightIndicesOffsetAndCountID, Vector4.zero);
+            cameraBuffer.SetGlobalVector(lightIndicesOffsetAndCountId, Vector4.zero);
 
         cameraBuffer.BeginSample("Render Camera");
 
@@ -249,10 +255,10 @@ public class MyPipeline : RenderPipeline
             cull.SetLightIndexMap(lightIndices);
         }
     }
-
+    
     private void RenderShadows(ScriptableRenderContext renderContext)
     {
-        shadowMap = RenderTexture.GetTemporary(512, 512, 16, RenderTextureFormat.Shadowmap);
+        shadowMap = RenderTexture.GetTemporary(shadowMapSize, shadowMapSize, 16, RenderTextureFormat.Shadowmap);
         shadowMap.filterMode = FilterMode.Bilinear;
         shadowMap.wrapMode = TextureWrapMode.Clamp;
         //tell the GPU to render to our shaow map,load and store more precise texture
@@ -285,10 +291,12 @@ public class MyPipeline : RenderPipeline
         scaleOffset.m00 = scaleOffset.m11 = scaleOffset.m22 = 0.5f;
         scaleOffset.m03 = scaleOffset.m13 = scaleOffset.m23 = 0.5f;
 
-        Matrix4x4 worldToShadowMatrix = scaleOffset * (projectionMatrix * viewMatrix);
-        shadowBuffer.SetGlobalMatrix(worldToShadowMatrixId, worldToShadowMatrix);
+        Matrix4x4 worldToShadowMatrix =                       scaleOffset * (projectionMatrix * viewMatrix);
+        shadowBuffer.SetGlobalFloat  (shadowBiasId,           cull.visibleLights[0].light.shadowBias);
+        shadowBuffer.SetGlobalTexture(shadowMapId,            shadowMap);
+        shadowBuffer.SetGlobalFloat  (shadowStrengthId,       cull.visibleLights[0].light.shadowStrength);
+        shadowBuffer.SetGlobalMatrix (worldToShadowMatrixId,  worldToShadowMatrix);
 
-        shadowBuffer.SetGlobalTexture(shadowMapId, shadowMap);
         shadowBuffer.EndSample("Render Shadows");
         renderContext.ExecuteCommandBuffer(shadowBuffer);
         shadowBuffer.Clear();

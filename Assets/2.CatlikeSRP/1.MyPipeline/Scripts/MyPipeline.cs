@@ -12,11 +12,13 @@ public class MyPipeline : RenderPipeline
 
     private CommandBuffer cameraBuffer = new CommandBuffer() { name = "Render Camera" };
 
+    private CommandBuffer shadowBuffer = new CommandBuffer() { name = "Render Shadows" };
+
     private Material errorMaterial;
 
     private DrawRendererFlags drawFlags;
 
-    private const int maxVisibleLights = 4;
+    private const int maxVisibleLights = 16;
     private Vector4[] visibleLightColors                        =   new Vector4[maxVisibleLights];
     private Vector4[] visibleLightDirectionsOrPositions         =   new Vector4[maxVisibleLights];
     private Vector4[] visibleLightAttenuations                  =   new Vector4[maxVisibleLights];
@@ -26,7 +28,11 @@ public class MyPipeline : RenderPipeline
     private static int visibleLightDirectionsId                 =   Shader.PropertyToID("_VisibleLightDirectionsOrPositions");
     private static int visibleLightAttenuationsId               =   Shader.PropertyToID("_VisibleLightAttenuations");
     private static int visibleLightSpotDirectionsId             =   Shader.PropertyToID("_VisibleLightSpotDirections");
+    private static int lightIndicesOffsetAndCountID             =   Shader.PropertyToID("unity_LIghtIndicesOffsetAndCount");
+    private static int shadowMapId                              =   Shader.PropertyToID("_ShadowMap");
+    private static int worldToShadowMatrixId                    =   Shader.PropertyToID("_WorldToShadowMatrix");
 
+    private RenderTexture shadowMap;
 
     public MyPipeline(bool dynamicBatching,bool instance)
     {
@@ -78,12 +84,20 @@ public class MyPipeline : RenderPipeline
         //supply th culling parameters as a reference parameter
         CullResults.Cull(ref cullingParameters, renderContext, ref cull);
 
+        //shaow map is to be rendered before the regular scene
+        RenderShadows(renderContext);
+
         //apply camera's properties to the context,draw the skybox correctly
         renderContext.SetupCameraProperties(camera);
 
         CameraClearFlags clearFlags = camera.clearFlags;
         cameraBuffer.ClearRenderTarget((clearFlags & CameraClearFlags.Depth) != 0, (clearFlags & CameraClearFlags.Color) != 0, camera.backgroundColor);
-        ConfigureLights();
+        //
+        if (cull.visibleLights.Count > 0)
+            ConfigureLights();
+        else
+            cameraBuffer.SetGlobalVector(lightIndicesOffsetAndCountID, Vector4.zero);
+
         cameraBuffer.BeginSample("Render Camera");
 
         cameraBuffer.SetGlobalVectorArray(visibleLightColorsId,         visibleLightColors);
@@ -99,8 +113,12 @@ public class MyPipeline : RenderPipeline
         //set the renderqueue
         drawSettings.sorting.flags = SortFlags.CommonOpaque;
         drawSettings.flags = drawFlags;
+        //Light Indices,store up to eight indices in two float4 variables, which are set per object. 
+        if(cull.visibleLights.Count > 0)
+        {
+            drawSettings.rendererConfiguration = RendererConfiguration.PerObjectLightIndices8;
+        }
         var filterSettings = new FilterRenderersSettings(true);
- 
         // Draw Opaque renderers before the skybox to prevent overdraw
         // RenderQueueRange.opaque, which covers the render queues from 0 up to and including 2500.
         filterSettings.renderQueueRange = RenderQueueRange.opaque;
@@ -124,6 +142,12 @@ public class MyPipeline : RenderPipeline
 
         //drawSkybox will work after this
         renderContext.Submit();
+
+        if (shadowMap)
+        {
+            RenderTexture.ReleaseTemporary(shadowMap);
+            shadowMap = null;
+        }
     }
 
     //To only include the invocation when compiling for the Unity Editor and development builds
@@ -157,8 +181,8 @@ public class MyPipeline : RenderPipeline
     //Figures out which lights are visible
     private void ConfigureLights()
     {
-        int i = 0;
-        for (; i < cull.visibleLights.Count; i++)
+        //int i = 0;
+        for (int i = 0; i < cull.visibleLights.Count; i++)
         {
             //prevent the light count exceed maxVisibleLights
             if (i == maxVisibleLights) break;
@@ -170,7 +194,7 @@ public class MyPipeline : RenderPipeline
             //keep spot fade calcutation from affecting the other light types
             attenuation.w = 1;
             if (light.lightType == LightType.Directional)
-            { 
+            {
                 //The third column of that matrix defines the transformed local Z direction vector, which we can get via the Matrix4x4.GetColumn method, with index 2 as an argument.
                 Vector4 v = light.localToWorld.GetColumn(2);
                 v.x = -v.x;
@@ -184,7 +208,7 @@ public class MyPipeline : RenderPipeline
                 visibleLightDirectionsOrPositions[i] = light.localToWorld.GetColumn(3);
                 attenuation.x = 1f / Mathf.Max(light.range * light.range, 0.00001f);
 
-                if(light.lightType == LightType.Spot)
+                if (light.lightType == LightType.Spot)
                 {
                     Vector4 v = light.localToWorld.GetColumn(2);
                     v.x = -v.x;
@@ -207,10 +231,67 @@ public class MyPipeline : RenderPipeline
 
             visibleLightAttenuations[i] = attenuation;
         }
+        //
         //when the amount of visible lights decreases. They remain visible, because we don't reset their data. 
-        for (; i < maxVisibleLights; i++)
+        //for (; i < maxVisibleLights; i++)
+        //{
+        //    visibleLightColors[i] = Color.clear;
+        //}
+
+        //too many lights,cull some
+        if (cull.visibleLights.Count > maxVisibleLights)
         {
-            visibleLightColors[i] = Color.clear;
+            int[] lightIndices = cull.GetLightIndexMap();
+            for (int i = maxVisibleLights; i < cull.visibleLights.Count; i++)
+            {
+                lightIndices[i] = -1;
+            }
+            cull.SetLightIndexMap(lightIndices);
         }
+    }
+
+    private void RenderShadows(ScriptableRenderContext renderContext)
+    {
+        shadowMap = RenderTexture.GetTemporary(512, 512, 16, RenderTextureFormat.Shadowmap);
+        shadowMap.filterMode = FilterMode.Bilinear;
+        shadowMap.wrapMode = TextureWrapMode.Clamp;
+        //tell the GPU to render to our shaow map,load and store more precise texture
+        CoreUtils.SetRenderTarget(shadowBuffer, shadowMap,RenderBufferLoadAction.DontCare,RenderBufferStoreAction.Store,ClearFlag.Depth);
+
+        shadowBuffer.BeginSample("Render Shadows");
+        renderContext.ExecuteCommandBuffer(shadowBuffer);
+        shadowBuffer.Clear();
+
+        Matrix4x4 viewMatrix, projectionMatrix;
+        ShadowSplitData splitData;
+        cull.ComputeSpotShadowMatricesAndCullingPrimitives(0, out viewMatrix, out projectionMatrix, out splitData);
+        shadowBuffer.SetViewProjectionMatrices(viewMatrix, projectionMatrix);
+        renderContext.ExecuteCommandBuffer(shadowBuffer);
+        shadowBuffer.Clear();
+
+        var shadowSettings = new DrawShadowsSettings(cull, 0);
+        renderContext.DrawShadows(ref shadowSettings);
+
+        //Opengl Z is reversed
+        if (SystemInfo.usesReversedZBuffer)
+        {
+            projectionMatrix.m20 = -projectionMatrix.m20;
+            projectionMatrix.m21 = -projectionMatrix.m21;
+            projectionMatrix.m22 = -projectionMatrix.m22;
+            projectionMatrix.m23 = -projectionMatrix.m23;
+        }
+        //clip space goes from -1 to 1,while texture coordinates and depth go from 0 to 1.so need to tranfer the matrix
+        var scaleOffset = Matrix4x4.identity;
+        scaleOffset.m00 = scaleOffset.m11 = scaleOffset.m22 = 0.5f;
+        scaleOffset.m03 = scaleOffset.m13 = scaleOffset.m23 = 0.5f;
+
+        Matrix4x4 worldToShadowMatrix = scaleOffset * (projectionMatrix * viewMatrix);
+        shadowBuffer.SetGlobalMatrix(worldToShadowMatrixId, worldToShadowMatrix);
+
+        shadowBuffer.SetGlobalTexture(shadowMapId, shadowMap);
+        shadowBuffer.EndSample("Render Shadows");
+        renderContext.ExecuteCommandBuffer(shadowBuffer);
+        shadowBuffer.Clear();
+
     }
 }

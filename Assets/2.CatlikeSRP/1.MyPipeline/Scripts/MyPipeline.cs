@@ -14,6 +14,7 @@ public class MyPipeline : RenderPipeline
     private int shadowMapSize;
     private Material errorMaterial;
     private DrawRendererFlags drawFlags;
+    private const string shadowSoftKeyword                      =   "_SHADOWS_SOFT";
 
 
     private CommandBuffer cameraBuffer                          =   new CommandBuffer() { name = "Render Camera" };
@@ -33,6 +34,8 @@ public class MyPipeline : RenderPipeline
     private static int worldToShadowMatrixId                    =   Shader.PropertyToID("_WorldToShadowMatrix");
     private static int shadowBiasId                             =   Shader.PropertyToID("_ShadowBias");
     private static int shadowStrengthId                         =   Shader.PropertyToID("_ShadowStrength");
+    private static int shadowMapSizeId                          =   Shader.PropertyToID("_ShadowMapSize");
+
 
 
 
@@ -272,6 +275,7 @@ public class MyPipeline : RenderPipeline
         ShadowSplitData splitData;
         cull.ComputeSpotShadowMatricesAndCullingPrimitives(0, out viewMatrix, out projectionMatrix, out splitData);
         shadowBuffer.SetViewProjectionMatrices(viewMatrix, projectionMatrix);
+        shadowBuffer.SetGlobalFloat(shadowBiasId, cull.visibleLights[0].light.shadowBias);
         renderContext.ExecuteCommandBuffer(shadowBuffer);
         shadowBuffer.Clear();
 
@@ -291,11 +295,22 @@ public class MyPipeline : RenderPipeline
         scaleOffset.m00 = scaleOffset.m11 = scaleOffset.m22 = 0.5f;
         scaleOffset.m03 = scaleOffset.m13 = scaleOffset.m23 = 0.5f;
 
-        Matrix4x4 worldToShadowMatrix =                       scaleOffset * (projectionMatrix * viewMatrix);
-        shadowBuffer.SetGlobalFloat  (shadowBiasId,           cull.visibleLights[0].light.shadowBias);
-        shadowBuffer.SetGlobalTexture(shadowMapId,            shadowMap);
-        shadowBuffer.SetGlobalFloat  (shadowStrengthId,       cull.visibleLights[0].light.shadowStrength);
-        shadowBuffer.SetGlobalMatrix (worldToShadowMatrixId,  worldToShadowMatrix);
+        Matrix4x4 worldToShadowMatrix = scaleOffset * (projectionMatrix * viewMatrix);
+        shadowBuffer.SetGlobalMatrix(worldToShadowMatrixId, worldToShadowMatrix);
+        shadowBuffer.SetGlobalTexture(shadowMapId, shadowMap);
+        shadowBuffer.SetGlobalFloat(shadowStrengthId, cull.visibleLights[0].light.shadowStrength);
+
+        float invShadowMapSize = 1f / shadowMapSize;
+        shadowBuffer.SetGlobalVector(shadowMapSizeId,new Vector4(invShadowMapSize,invShadowMapSize,shadowMapSize,shadowMapSize));
+
+        // if(cull.visibleLights[0].light.shadows == LightShadows.Soft){
+        //     shadowBuffer.EnableShaderKeyword(shadowSoftKeyword);
+        // }else
+        // {
+        //     shadowBuffer.DisableShaderKeyword(shadowSoftKeyword);
+        // }
+
+        CoreUtils.SetKeyword(shadowBuffer,shadowSoftKeyword,cull.visibleLights[0].light.shadows == LightShadows.Soft);
 
         shadowBuffer.EndSample("Render Shadows");
         renderContext.ExecuteCommandBuffer(shadowBuffer);

@@ -37,6 +37,7 @@ CBUFFER_END
 CBUFFER_START(_ShadowBuffer)
 float4x4 _WorldToShadowMatrix;
 float	 _ShadowStrength;
+float4 	 _ShadowMapSize;
 CBUFFER_END
 
 //Use this macro to define shadowMap
@@ -49,6 +50,16 @@ float ShadowAttenuation(float3 worldPos) {
 	//here need the regular coordinates,so devide XYZ by its W
 	shadowPos.xyz /= shadowPos.w;
 	float attenuation = SAMPLE_TEXTURE2D_SHADOW(_ShadowMap, sampler_ShadowMap, shadowPos.xyz);
+#if defined(_SHADOWS_SOFT)
+	real  tentWeights[9];
+	real2 tentUVs[9];
+	SampleShadow_ComputeSamples_Tent_5x5(_ShadowMapSize,shadowPos.xy,tentWeights,tenUVs);
+	attenuation = 0;
+	for(int i = 0;i < 9;i++){
+		attenuation += tentWeights[i] *  SAMPLE_TEXTURE2D_SHADOW(_ShadowMap, sampler_ShadowMap, float3(tentUVs[i].xy,shadowPos.z));
+	}
+#endif
+
 	return lerp(1, attenuation, _ShadowStrength);
 }
 

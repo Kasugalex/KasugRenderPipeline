@@ -3,6 +3,7 @@ obj
 *.sln
 *.csproj
 *.vs
+.vscode
 Temp
 Library
 Library/AnnotationManager
